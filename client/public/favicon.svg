@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <rect width="100" height="100" rx="22" fill="#000000"/>
+  <!-- Stylized B with speech bubble -->
+  <path d="M28 24 C28 24 64 24 64 38 C64 47 52 50 52 50 C66 50 72 60 72 70 C72 82 56 82 56 82 L28 82 Z" fill="white" fill-rule="evenodd"/>
+  <!-- Chat bubble cutout inside B -->
+  <path d="M38 48 C38 42 46 42 54 42 C60 42 63 46 63 51 C63 57 58 60 52 60 L44 60 L38 66 Z" fill="#000000"/>
+  <!-- Three dots inside bubble -->
+  <circle cx="44" cy="51" r="2" fill="white"/>
+  <circle cx="51" cy="51" r="2" fill="white"/>
+  <circle cx="58" cy="51" r="2" fill="white"/>
+</svg>

@@ -1,0 +1,32 @@
+{
+  "name": "baso-server",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "BASO - Minimalist Real-Time Chat & Calls Backend",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "keywords": [
+    "chat",
+    "webrtc",
+    "socketio",
+    "minimalist"
+  ],
+  "author": "BASO",
+  "license": "ISC",
+  "dependencies": {
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.2.0",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "libphonenumber-js": "^1.13.14",
+    "mongoose": "^8.3.1",
+    "socket.io": "^4.7.5",
+    "validator": "^13.11.0"
+  }
+}
