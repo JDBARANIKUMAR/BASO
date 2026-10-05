@@ -8,39 +8,35 @@ export const getMessages = async (req, res, next) => {
     const { before, limit = 40 } = req.query;
     const userId = req.user._id;
 
-    const query = {
-      $or: [
-        { sender: userId, recipient: friendId },
-        { sender: friendId, recipient: userId },
-      ],
-    };
+    const parsedLimit = Math.min(parseInt(limit, 10) || 40, 100);
 
-    if (before) {
-      query.createdAt = { $lt: new Date(before) };
-    }
-
-    const messages = await Message.find(query)
-      .sort({ createdAt: -1 })
-      .limit(Math.min(parseInt(limit, 10) || 40, 100))
-      .lean();
+    const messages = await Message.findConversation({
+      userId,
+      friendId,
+      before: before || null,
+      limit: parsedLimit,
+    });
 
     // Mark unread messages sent by friend to current user as 'read'
-    const unreadMessageIds = messages
-      .filter((m) => m.sender.toString() === friendId.toString() && m.status !== 'read')
-      .map((m) => m._id);
+    const unreadMessages = messages.filter(
+      (m) => m.sender?.toString() === friendId.toString() && m.status !== 'read'
+    );
 
-    if (unreadMessageIds.length > 0) {
-      await Message.updateMany(
-        { _id: { $in: unreadMessageIds } },
-        { status: 'read', readAt: new Date() }
-      );
+    if (unreadMessages.length > 0) {
+      await Message.updateManyStatus({
+        sender: friendId,
+        recipient: userId,
+        excludeStatus: 'read',
+        newStatus: 'read',
+        updateFields: { readAt: new Date() },
+      });
     }
 
     // Return in chronological order (oldest to newest)
     res.status(200).json({
       success: true,
       messages: messages.reverse(),
-      hasMore: messages.length === parseInt(limit, 10),
+      hasMore: messages.length === parsedLimit,
     });
   } catch (error) {
     next(error);
@@ -102,10 +98,13 @@ export const markMessagesRead = async (req, res, next) => {
       });
     }
 
-    await Message.updateMany(
-      { sender: senderId, recipient: userId, status: { $ne: 'read' } },
-      { status: 'read', readAt: new Date() }
-    );
+    await Message.updateManyStatus({
+      sender: senderId,
+      recipient: userId,
+      excludeStatus: 'read',
+      newStatus: 'read',
+      updateFields: { readAt: new Date() },
+    });
 
     res.status(200).json({
       success: true,

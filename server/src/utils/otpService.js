@@ -113,7 +113,7 @@ export const verifyOtpCode = async (mobile, inputCode) => {
 
   if (record.code !== inputCode.trim()) {
     record.attempts += 1;
-    await record.save();
+    await Otp.save(record);
     const err = new Error('Incorrect verification code. Please try again.');
     err.status = 400;
     throw err;

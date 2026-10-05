@@ -23,7 +23,8 @@ export const searchUserByMobile = async (req, res, next) => {
       });
     }
 
-    const foundUser = await User.findOne({ mobile: sanitized, isRegistered: true }).select(
+    const foundUser = await User.findOne(
+      { mobile: sanitized, isRegistered: true },
       '_id name mobile avatar isOnline lastSeen'
     );
 
@@ -80,13 +81,13 @@ export const addFriend = async (req, res, next) => {
     const friendshipA = await Friendship.findOneAndUpdate(
       { user: req.user._id, friend: targetUser._id },
       { lastInteractionAt: new Date() },
-      { upsert: true, new: true }
-    ).populate('friend', '_id name mobile avatar isOnline lastSeen');
+      { upsert: true, populate: 'friend' }
+    );
 
     await Friendship.findOneAndUpdate(
       { user: targetUser._id, friend: req.user._id },
       { lastInteractionAt: new Date() },
-      { upsert: true, new: true }
+      { upsert: true }
     );
 
     res.status(200).json({
@@ -102,11 +103,7 @@ export const addFriend = async (req, res, next) => {
 // GET /api/friends
 export const getFriends = async (req, res, next) => {
   try {
-    const friendships = await Friendship.find({ user: req.user._id })
-      .populate('friend', '_id name mobile avatar isOnline lastSeen')
-      .populate('lastMessage')
-      .sort({ lastInteractionAt: -1 })
-      .lean();
+    const friendships = await Friendship.findAllForUser(req.user._id);
 
     res.status(200).json({
       success: true,

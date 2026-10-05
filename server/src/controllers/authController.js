@@ -63,7 +63,7 @@ export const verifyOtp = async (req, res, next) => {
     // Save refresh token to user
     user.refreshToken = refreshToken;
     user.lastSeen = new Date();
-    await user.save();
+    await User.save(user);
 
     setRefreshTokenCookie(res, refreshToken);
 
@@ -96,7 +96,7 @@ export const completeProfile = async (req, res, next) => {
       user.avatar = avatar;
     }
     user.isRegistered = true;
-    await user.save();
+    await User.save(user);
 
     res.status(200).json({
       success: true,
@@ -142,7 +142,7 @@ export const refreshToken = async (req, res, next) => {
     // Token rotation: generate new access & refresh tokens
     const { accessToken, refreshToken: newRefreshToken } = generateTokens(user._id);
     user.refreshToken = newRefreshToken;
-    await user.save();
+    await User.save(user);
 
     setRefreshTokenCookie(res, newRefreshToken);
 

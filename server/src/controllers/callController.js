@@ -36,14 +36,7 @@ export const logCall = async (req, res, next) => {
 export const getRecentCalls = async (req, res, next) => {
   try {
     const userId = req.user._id;
-    const calls = await Call.find({
-      $or: [{ caller: userId }, { recipient: userId }],
-    })
-      .populate('caller', '_id name mobile avatar')
-      .populate('recipient', '_id name mobile avatar')
-      .sort({ createdAt: -1 })
-      .limit(30)
-      .lean();
+    const calls = await Call.findRecentForUser(userId, 30);
 
     res.status(200).json({
       success: true,

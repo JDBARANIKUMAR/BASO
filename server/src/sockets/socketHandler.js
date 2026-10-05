@@ -112,10 +112,13 @@ export const initSocket = (io) => {
       try {
         if (!senderId) return;
         const now = new Date();
-        await Message.updateMany(
-          { sender: senderId, recipient: userId, status: { $ne: 'read' } },
-          { status: 'read', readAt: now }
-        );
+        await Message.updateManyStatus({
+          sender: senderId,
+          recipient: userId,
+          excludeStatus: 'read',
+          newStatus: 'read',
+          updateFields: { readAt: now },
+        });
 
         // Notify the original sender that their messages were read
         io.to(`user:${senderId}`).emit('message:read_ack', {
@@ -171,7 +174,10 @@ export const initSocket = (io) => {
         }
 
         // Get caller details
-        const callerUser = await User.findById(userId).select('_id name avatar mobile');
+        const callerUser = await User.findById(userId);
+        const callerInfo = callerUser
+          ? { _id: callerUser._id, name: callerUser.name, avatar: callerUser.avatar, mobile: callerUser.mobile }
+          : null;
 
         // Setup 30-second no-answer timeout
         const timeoutTimer = setTimeout(async () => {
@@ -216,7 +222,7 @@ export const initSocket = (io) => {
         // Ring recipient
         io.to(`user:${recipientId}`).emit('call:incoming', {
           callId,
-          caller: callerUser,
+          caller: callerInfo,
           type,
         });
       } catch (err) {
