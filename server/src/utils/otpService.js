@@ -1,5 +1,5 @@
 import { parsePhoneNumber, isValidPhoneNumber } from 'libphonenumber-js';
-import { Otp } from '../models/Otp.js';
+import { prisma } from '../config/db.js';
 
 // Validate and format mobile number to international E.164 format
 export const sanitizeAndValidateMobile = (mobile, defaultCountry = 'IN') => {
@@ -31,9 +31,9 @@ export const sendOtpCode = async (mobile) => {
   const now = new Date();
 
   // Check if an OTP was sent recently (30 seconds cooldown)
-  const existingOtp = await Otp.findOne({ mobile: sanitized });
+  const existingOtp = await prisma.otp.findUnique({ where: { mobile: sanitized } });
   if (existingOtp && existingOtp.resendAvailableAt > now) {
-    const remainingSeconds = Math.ceil((existingOtp.resendAvailableAt - now) / 1000);
+    const remainingSeconds = Math.ceil((existingOtp.resendAvailableAt.getTime() - now.getTime()) / 1000);
     const error = new Error(`Please wait ${remainingSeconds} seconds before requesting a new OTP.`);
     error.status = 429;
     error.remainingSeconds = remainingSeconds;
@@ -45,16 +45,22 @@ export const sendOtpCode = async (mobile) => {
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes validity
   const resendAvailableAt = new Date(Date.now() + 30 * 1000); // 30 seconds cooldown
 
-  await Otp.findOneAndUpdate(
-    { mobile: sanitized },
-    {
+  await prisma.otp.upsert({
+    where: { mobile: sanitized },
+    update: {
       code,
       expiresAt,
       resendAvailableAt,
       attempts: 0,
     },
-    { upsert: true, new: true }
-  );
+    create: {
+      mobile: sanitized,
+      code,
+      expiresAt,
+      resendAvailableAt,
+      attempts: 0,
+    },
+  });
 
   console.log(`[OTP SERVICE] Code for ${sanitized}: ${code} (expires in 5m)`);
 
@@ -90,7 +96,7 @@ export const verifyOtpCode = async (mobile, inputCode) => {
   const sanitized = sanitizeAndValidateMobile(mobile);
   const now = new Date();
 
-  const record = await Otp.findOne({ mobile: sanitized });
+  const record = await prisma.otp.findUnique({ where: { mobile: sanitized } });
   if (!record) {
     const err = new Error('No OTP requested or code has expired.');
     err.status = 400;
@@ -98,28 +104,30 @@ export const verifyOtpCode = async (mobile, inputCode) => {
   }
 
   if (record.expiresAt < now) {
-    await Otp.deleteOne({ _id: record._id });
+    await prisma.otp.delete({ where: { id: record.id } });
     const err = new Error('OTP has expired. Please request a new one.');
     err.status = 400;
     throw err;
   }
 
   if (record.attempts >= 5) {
-    await Otp.deleteOne({ _id: record._id });
+    await prisma.otp.delete({ where: { id: record.id } });
     const err = new Error('Too many invalid attempts. Please request a new OTP.');
     err.status = 429;
     throw err;
   }
 
   if (record.code !== inputCode.trim()) {
-    record.attempts += 1;
-    await Otp.save(record);
+    await prisma.otp.update({
+      where: { id: record.id },
+      data: { attempts: record.attempts + 1 },
+    });
     const err = new Error('Incorrect verification code. Please try again.');
     err.status = 400;
     throw err;
   }
 
   // Verification successful: consume the OTP
-  await Otp.deleteOne({ _id: record._id });
+  await prisma.otp.delete({ where: { id: record.id } });
   return true;
 };

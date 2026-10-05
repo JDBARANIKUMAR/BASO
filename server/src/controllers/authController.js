@@ -1,4 +1,4 @@
-import { User } from '../models/User.js';
+import { prisma } from '../config/db.js';
 import { sendOtpCode, verifyOtpCode, sanitizeAndValidateMobile } from '../utils/otpService.js';
 import {
   generateTokens,
@@ -40,39 +40,58 @@ export const verifyOtp = async (req, res, next) => {
       });
     }
 
-    // sanitizeAndValidateMobile throws if invalid
     const sanitized = sanitizeAndValidateMobile(mobile);
     await verifyOtpCode(sanitized, code);
 
     // Check if user exists
-    let user = await User.findOne({ mobile: sanitized });
+    let user = await prisma.user.findUnique({ where: { mobile: sanitized } });
     let isNewUser = false;
 
     if (!user) {
-      user = await User.create({
-        mobile: sanitized,
-        isRegistered: false,
+      user = await prisma.user.create({
+        data: {
+          mobile: sanitized,
+          name: '',
+          isRegistered: false,
+          isOnline: true,
+        },
       });
       isNewUser = true;
     } else if (!user.isRegistered) {
       isNewUser = true;
     }
 
-    const { accessToken, refreshToken } = generateTokens(user._id);
+    const { accessToken, refreshToken } = generateTokens(user.id);
 
     // Save refresh token to user
-    user.refreshToken = refreshToken;
-    user.lastSeen = new Date();
-    await User.save(user);
+    user = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        refreshToken,
+        lastSeen: new Date(),
+        isOnline: true,
+      },
+    });
 
     setRefreshTokenCookie(res, refreshToken);
+
+    const publicUser = {
+      id: user.id,
+      mobile: user.mobile,
+      name: user.name,
+      avatar: user.avatar,
+      isRegistered: user.isRegistered,
+      isOnline: user.isOnline,
+      lastSeen: user.lastSeen,
+      createdAt: user.createdAt,
+    };
 
     res.status(200).json({
       success: true,
       message: 'OTP verified successfully.',
       accessToken,
       isNewUser,
-      user: user.toPublicJSON(),
+      user: publicUser,
     });
   } catch (error) {
     next(error);
@@ -90,18 +109,30 @@ export const completeProfile = async (req, res, next) => {
       });
     }
 
-    const user = req.user;
-    user.name = name.trim();
-    if (avatar && typeof avatar === 'string') {
-      user.avatar = avatar;
-    }
-    user.isRegistered = true;
-    await User.save(user);
+    const updatedUser = await prisma.user.update({
+      where: { id: req.user.id },
+      data: {
+        name: name.trim(),
+        avatar: avatar || null,
+        isRegistered: true,
+      },
+    });
+
+    const publicUser = {
+      id: updatedUser.id,
+      mobile: updatedUser.mobile,
+      name: updatedUser.name,
+      avatar: updatedUser.avatar,
+      isRegistered: updatedUser.isRegistered,
+      isOnline: updatedUser.isOnline,
+      lastSeen: updatedUser.lastSeen,
+      createdAt: updatedUser.createdAt,
+    };
 
     res.status(200).json({
       success: true,
       message: 'Profile completed.',
-      user: user.toPublicJSON(),
+      user: publicUser,
     });
   } catch (error) {
     next(error);
@@ -130,7 +161,7 @@ export const refreshToken = async (req, res, next) => {
       });
     }
 
-    const user = await User.findById(decoded.id);
+    const user = await prisma.user.findUnique({ where: { id: decoded.id } });
     if (!user || user.refreshToken !== cookieToken) {
       clearRefreshTokenCookie(res);
       return res.status(401).json({
@@ -140,16 +171,30 @@ export const refreshToken = async (req, res, next) => {
     }
 
     // Token rotation: generate new access & refresh tokens
-    const { accessToken, refreshToken: newRefreshToken } = generateTokens(user._id);
-    user.refreshToken = newRefreshToken;
-    await User.save(user);
+    const { accessToken, refreshToken: newRefreshToken } = generateTokens(user.id);
+    
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { refreshToken: newRefreshToken },
+    });
 
     setRefreshTokenCookie(res, newRefreshToken);
+
+    const publicUser = {
+      id: user.id,
+      mobile: user.mobile,
+      name: user.name,
+      avatar: user.avatar,
+      isRegistered: user.isRegistered,
+      isOnline: user.isOnline,
+      lastSeen: user.lastSeen,
+      createdAt: user.createdAt,
+    };
 
     res.status(200).json({
       success: true,
       accessToken,
-      user: user.toPublicJSON(),
+      user: publicUser,
     });
   } catch (error) {
     next(error);
@@ -158,9 +203,19 @@ export const refreshToken = async (req, res, next) => {
 
 // GET /api/auth/me
 export const getMe = async (req, res) => {
+  const publicUser = {
+    id: req.user.id,
+    mobile: req.user.mobile,
+    name: req.user.name,
+    avatar: req.user.avatar,
+    isRegistered: req.user.isRegistered,
+    isOnline: req.user.isOnline,
+    lastSeen: req.user.lastSeen,
+    createdAt: req.user.createdAt,
+  };
   res.status(200).json({
     success: true,
-    user: req.user.toPublicJSON(),
+    user: publicUser,
   });
 };
 
@@ -171,10 +226,13 @@ export const logout = async (req, res, next) => {
     if (cookieToken) {
       try {
         const decoded = verifyRefreshToken(cookieToken);
-        await User.findByIdAndUpdate(decoded.id, {
-          refreshToken: null,
-          isOnline: false,
-          lastSeen: new Date(),
+        await prisma.user.update({
+          where: { id: decoded.id },
+          data: {
+            refreshToken: null,
+            isOnline: false,
+            lastSeen: new Date(),
+          },
         });
       } catch (e) {
         // Ignore token error on logout

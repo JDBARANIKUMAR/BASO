@@ -1,5 +1,4 @@
-import { User } from '../models/User.js';
-import { Friendship } from '../models/Friendship.js';
+import { prisma } from '../config/db.js';
 import { sanitizeAndValidateMobile } from '../utils/otpService.js';
 
 // GET /api/friends/search?mobile=+1234567890
@@ -23,10 +22,17 @@ export const searchUserByMobile = async (req, res, next) => {
       });
     }
 
-    const foundUser = await User.findOne(
-      { mobile: sanitized, isRegistered: true },
-      '_id name mobile avatar isOnline lastSeen'
-    );
+    const foundUser = await prisma.user.findFirst({
+      where: { mobile: sanitized, isRegistered: true },
+      select: {
+        id: true,
+        name: true,
+        mobile: true,
+        avatar: true,
+        isOnline: true,
+        lastSeen: true,
+      },
+    });
 
     if (!foundUser) {
       return res.status(404).json({
@@ -36,14 +42,19 @@ export const searchUserByMobile = async (req, res, next) => {
     }
 
     // Check if already friends
-    const existingFriendship = await Friendship.findOne({
-      user: req.user._id,
-      friend: foundUser._id,
+    const existingFriendship = await prisma.friendship.findFirst({
+      where: {
+        userId: req.user.id,
+        friendId: foundUser.id,
+      },
     });
 
     res.status(200).json({
       success: true,
-      user: foundUser,
+      user: {
+        _id: foundUser.id,
+        ...foundUser
+      },
       alreadyFriend: Boolean(existingFriendship),
     });
   } catch (error) {
@@ -62,14 +73,14 @@ export const addFriend = async (req, res, next) => {
       });
     }
 
-    if (friendId.toString() === req.user._id.toString()) {
+    if (friendId === req.user.id) {
       return res.status(400).json({
         success: false,
         message: 'You cannot add yourself.',
       });
     }
 
-    const targetUser = await User.findById(friendId);
+    const targetUser = await prisma.user.findUnique({ where: { id: friendId } });
     if (!targetUser || !targetUser.isRegistered) {
       return res.status(404).json({
         success: false,
@@ -77,23 +88,54 @@ export const addFriend = async (req, res, next) => {
       });
     }
 
-    // Create bidirectional friendship records
-    const friendshipA = await Friendship.findOneAndUpdate(
-      { user: req.user._id, friend: targetUser._id },
-      { lastInteractionAt: new Date() },
-      { upsert: true, populate: 'friend' }
-    );
+    const now = new Date();
 
-    await Friendship.findOneAndUpdate(
-      { user: targetUser._id, friend: req.user._id },
-      { lastInteractionAt: new Date() },
-      { upsert: true }
-    );
+    // Create bidirectional friendship records
+    const friendshipA = await prisma.friendship.upsert({
+      where: {
+        userId_friendId: {
+          userId: req.user.id,
+          friendId: targetUser.id,
+        },
+      },
+      update: { lastInteractionAt: now },
+      create: {
+        userId: req.user.id,
+        friendId: targetUser.id,
+        lastInteractionAt: now,
+      },
+      include: {
+        friend: true,
+      },
+    });
+
+    await prisma.friendship.upsert({
+      where: {
+        userId_friendId: {
+          userId: targetUser.id,
+          friendId: req.user.id,
+        },
+      },
+      update: { lastInteractionAt: now },
+      create: {
+        userId: targetUser.id,
+        friendId: req.user.id,
+        lastInteractionAt: now,
+      },
+    });
 
     res.status(200).json({
       success: true,
       message: 'Friend added successfully.',
-      friendship: friendshipA,
+      friendship: {
+        _id: friendshipA.id,
+        user: friendshipA.userId,
+        friend: {
+          _id: friendshipA.friend.id,
+          ...friendshipA.friend
+        },
+        lastInteractionAt: friendshipA.lastInteractionAt,
+      },
     });
   } catch (error) {
     next(error);
@@ -103,14 +145,21 @@ export const addFriend = async (req, res, next) => {
 // GET /api/friends
 export const getFriends = async (req, res, next) => {
   try {
-    const friendships = await Friendship.findAllForUser(req.user._id);
+    const friendships = await prisma.friendship.findMany({
+      where: { userId: req.user.id },
+      orderBy: { lastInteractionAt: 'desc' },
+      include: {
+        friend: true,
+        lastMessage: true,
+      },
+    });
 
     res.status(200).json({
       success: true,
       friends: friendships.map((f) => ({
-        friendshipId: f._id,
-        user: f.friend,
-        lastMessage: f.lastMessage,
+        friendshipId: f.id,
+        user: { _id: f.friend.id, ...f.friend },
+        lastMessage: f.lastMessage ? { _id: f.lastMessage.id, ...f.lastMessage } : null,
         lastInteractionAt: f.lastInteractionAt,
       })),
     });

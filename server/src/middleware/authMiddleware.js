@@ -1,5 +1,5 @@
 import { verifyAccessToken } from '../utils/tokenService.js';
-import { User } from '../models/User.js';
+import { prisma } from '../config/db.js';
 
 export const requireAuth = async (req, res, next) => {
   try {
@@ -24,7 +24,7 @@ export const requireAuth = async (req, res, next) => {
       });
     }
 
-    const user = await User.findById(decoded.id);
+    const user = await prisma.user.findUnique({ where: { id: decoded.id } });
     if (!user) {
       return res.status(401).json({
         success: false,

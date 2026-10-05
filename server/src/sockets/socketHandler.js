@@ -1,8 +1,5 @@
 import { verifyAccessToken } from '../utils/tokenService.js';
-import { User } from '../models/User.js';
-import { Message } from '../models/Message.js';
-import { Call } from '../models/Call.js';
-import { Friendship } from '../models/Friendship.js';
+import { prisma } from '../config/db.js';
 
 // Global tracking maps
 // userId -> Set<socketId>
@@ -49,7 +46,10 @@ export const initSocket = (io) => {
 
     // If this is the user's first active socket, broadcast online status
     if (userSockets.get(userId).size === 1) {
-      await User.findByIdAndUpdate(userId, { isOnline: true }).catch(() => {});
+      await prisma.user.update({
+        where: { id: userId },
+        data: { isOnline: true },
+      }).catch(() => {});
       io.emit('user:status', { userId, isOnline: true, lastSeen: new Date() });
     }
 
@@ -72,33 +72,38 @@ export const initSocket = (io) => {
         const initialStatus = isRecipientOnline ? 'delivered' : 'sent';
         const now = new Date();
 
-        const message = await Message.create({
-          sender: userId,
-          recipient: recipientId,
-          content: content.trim(),
-          tempId: tempId || null,
-          status: initialStatus,
-          deliveredAt: isRecipientOnline ? now : null,
+        const message = await prisma.message.create({
+          data: {
+            senderId: userId,
+            recipientId: recipientId,
+            content: content.trim(),
+            tempId: tempId || null,
+            status: initialStatus,
+            deliveredAt: isRecipientOnline ? now : null,
+          }
         });
 
         // Update friendships
-        await Friendship.findOneAndUpdate(
-          { user: userId, friend: recipientId },
-          { lastMessage: message._id, lastInteractionAt: now },
-          { upsert: true }
-        );
-        await Friendship.findOneAndUpdate(
-          { user: recipientId, friend: userId },
-          { lastMessage: message._id, lastInteractionAt: now },
-          { upsert: true }
-        );
+        await prisma.friendship.upsert({
+          where: { userId_friendId: { userId: userId, friendId: recipientId } },
+          update: { lastMessageId: message.id, lastInteractionAt: now },
+          create: { userId: userId, friendId: recipientId, lastMessageId: message.id, lastInteractionAt: now }
+        });
+        await prisma.friendship.upsert({
+          where: { userId_friendId: { userId: recipientId, friendId: userId } },
+          update: { lastMessageId: message.id, lastInteractionAt: now },
+          create: { userId: recipientId, friendId: userId, lastMessageId: message.id, lastInteractionAt: now }
+        });
+
+        // Map id to _id for the client
+        const publicMessage = { _id: message.id, ...message };
 
         // Send to recipient's room
-        io.to(`user:${recipientId}`).emit('message:receive', message);
+        io.to(`user:${recipientId}`).emit('message:receive', publicMessage);
 
         // Ack back to sender with confirmed message
         if (typeof ack === 'function') {
-          ack({ success: true, message });
+          ack({ success: true, message: publicMessage });
         }
       } catch (err) {
         console.error('[Socket] Error saving/sending message:', err);
@@ -112,12 +117,16 @@ export const initSocket = (io) => {
       try {
         if (!senderId) return;
         const now = new Date();
-        await Message.updateManyStatus({
-          sender: senderId,
-          recipient: userId,
-          excludeStatus: 'read',
-          newStatus: 'read',
-          updateFields: { readAt: now },
+        await prisma.message.updateMany({
+          where: {
+            senderId: senderId,
+            recipientId: userId,
+            status: { not: 'read' }
+          },
+          data: {
+            status: 'read',
+            readAt: now,
+          }
         });
 
         // Notify the original sender that their messages were read
@@ -142,11 +151,13 @@ export const initSocket = (io) => {
         // Check if recipient is already in a call
         if (userActiveCall.has(recipientId)) {
           socket.emit('call:busy', { recipientId, callId, reason: 'User is busy on another call.' });
-          await Call.create({
-            caller: userId,
-            recipient: recipientId,
-            type,
-            status: 'busy',
+          await prisma.call.create({
+            data: {
+              callerId: userId,
+              recipientId: recipientId,
+              type,
+              status: 'busy',
+            }
           });
           return;
         }
@@ -164,19 +175,21 @@ export const initSocket = (io) => {
             recipientId,
             reason: 'User is currently offline.',
           });
-          await Call.create({
-            caller: userId,
-            recipient: recipientId,
-            type,
-            status: 'missed',
+          await prisma.call.create({
+            data: {
+              callerId: userId,
+              recipientId: recipientId,
+              type,
+              status: 'missed',
+            }
           });
           return;
         }
 
         // Get caller details
-        const callerUser = await User.findById(userId);
+        const callerUser = await prisma.user.findUnique({ where: { id: userId } });
         const callerInfo = callerUser
-          ? { _id: callerUser._id, name: callerUser.name, avatar: callerUser.avatar, mobile: callerUser.mobile }
+          ? { _id: callerUser.id, name: callerUser.name, avatar: callerUser.avatar, mobile: callerUser.mobile }
           : null;
 
         // Setup 30-second no-answer timeout
@@ -192,11 +205,13 @@ export const initSocket = (io) => {
               io.to(`user:${userId}`).emit('call:timeout', { callId });
               io.to(`user:${recipientId}`).emit('call:timeout', { callId });
 
-              await Call.create({
-                caller: userId,
-                recipient: recipientId,
-                type,
-                status: 'no_answer',
+              await prisma.call.create({
+                data: {
+                  callerId: userId,
+                  recipientId: recipientId,
+                  type,
+                  status: 'no_answer',
+                }
               });
             }
           }
@@ -267,11 +282,13 @@ export const initSocket = (io) => {
           reason: reason || 'Call declined',
         });
 
-        await Call.create({
-          caller: call.callerId,
-          recipient: call.recipientId,
-          type: call.type,
-          status: 'declined',
+        await prisma.call.create({
+          data: {
+            callerId: call.callerId,
+            recipientId: call.recipientId,
+            type: call.type,
+            status: 'declined',
+          }
         });
       }
     });
@@ -322,14 +339,16 @@ export const initSocket = (io) => {
         });
 
         // Log call record
-        await Call.create({
-          caller: call.callerId,
-          recipient: call.recipientId,
-          type: call.type,
-          status: call.startedAt ? 'completed' : 'missed',
-          duration: Math.round(duration),
-          startedAt: call.startedAt,
-          endedAt: new Date(),
+        await prisma.call.create({
+          data: {
+            callerId: call.callerId,
+            recipientId: call.recipientId,
+            type: call.type,
+            status: call.startedAt ? 'completed' : 'missed',
+            duration: Math.round(duration),
+            startedAt: call.startedAt,
+            endedAt: new Date(),
+          }
         }).catch((e) => console.error('[Socket] Error saving call log:', e));
       }
     });
@@ -346,9 +365,12 @@ export const initSocket = (io) => {
         if (sockets.size === 0) {
           userSockets.delete(userId);
           const now = new Date();
-          await User.findByIdAndUpdate(userId, {
-            isOnline: false,
-            lastSeen: now,
+          await prisma.user.update({
+            where: { id: userId },
+            data: {
+              isOnline: false,
+              lastSeen: now,
+            }
           }).catch(() => {});
 
           io.emit('user:status', { userId, isOnline: false, lastSeen: now });

@@ -1,10 +1,10 @@
-import { Call } from '../models/Call.js';
+import { prisma } from '../config/db.js';
 
 // POST /api/calls/log
 export const logCall = async (req, res, next) => {
   try {
     const { recipientId, type, status, duration, startedAt, endedAt } = req.body;
-    const userId = req.user._id;
+    const userId = req.user.id;
 
     if (!recipientId || !type) {
       return res.status(400).json({
@@ -13,19 +13,21 @@ export const logCall = async (req, res, next) => {
       });
     }
 
-    const call = await Call.create({
-      caller: userId,
-      recipient: recipientId,
-      type,
-      status: status || 'completed',
-      duration: duration || 0,
-      startedAt: startedAt ? new Date(startedAt) : new Date(),
-      endedAt: endedAt ? new Date(endedAt) : new Date(),
+    const call = await prisma.call.create({
+      data: {
+        callerId: userId,
+        recipientId: recipientId,
+        type,
+        status: status || 'completed',
+        duration: duration || 0,
+        startedAt: startedAt ? new Date(startedAt) : new Date(),
+        endedAt: endedAt ? new Date(endedAt) : new Date(),
+      },
     });
 
     res.status(201).json({
       success: true,
-      call,
+      call: { _id: call.id, ...call },
     });
   } catch (error) {
     next(error);
@@ -35,12 +37,32 @@ export const logCall = async (req, res, next) => {
 // GET /api/calls/recent
 export const getRecentCalls = async (req, res, next) => {
   try {
-    const userId = req.user._id;
-    const calls = await Call.findRecentForUser(userId, 30);
+    const userId = req.user.id;
+    const calls = await prisma.call.findMany({
+      where: {
+        OR: [{ callerId: userId }, { recipientId: userId }],
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 30,
+      include: {
+        caller: true,
+        recipient: true,
+      },
+    });
 
     res.status(200).json({
       success: true,
-      calls,
+      calls: calls.map(c => ({
+        _id: c.id,
+        caller: { _id: c.caller.id, ...c.caller },
+        recipient: { _id: c.recipient.id, ...c.recipient },
+        type: c.type,
+        status: c.status,
+        duration: c.duration,
+        startedAt: c.startedAt,
+        endedAt: c.endedAt,
+        createdAt: c.createdAt,
+      })),
     });
   } catch (error) {
     next(error);

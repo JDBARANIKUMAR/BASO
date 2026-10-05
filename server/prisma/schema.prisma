@@ -1,0 +1,90 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(uuid())
+  mobile       String    @unique
+  name         String
+  avatar       String?
+  isRegistered Boolean   @default(false)
+  isOnline     Boolean   @default(false)
+  lastSeen     DateTime?
+  refreshToken String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  messagesSent     Message[]    @relation("MessagesSent")
+  messagesReceived Message[]    @relation("MessagesReceived")
+  callsMade        Call[]       @relation("CallsMade")
+  callsReceived    Call[]       @relation("CallsReceived")
+  friendships      Friendship[] @relation("UserFriendships")
+  friendOf         Friendship[] @relation("FriendUserFriendships")
+}
+
+model Otp {
+  id                String   @id @default(uuid())
+  mobile            String   @unique
+  code              String
+  expiresAt         DateTime
+  resendAvailableAt DateTime
+  attempts          Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model Message {
+  id          String    @id @default(uuid())
+  senderId    String
+  recipientId String
+  content     String
+  tempId      String?
+  status      String    @default("sent") 
+  deliveredAt DateTime?
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  sender      User @relation("MessagesSent", fields: [senderId], references: [id])
+  recipient   User @relation("MessagesReceived", fields: [recipientId], references: [id])
+  friendships Friendship[] @relation("LastMessage")
+  
+  @@index([senderId, recipientId])
+}
+
+model Call {
+  id          String    @id @default(uuid())
+  callerId    String
+  recipientId String
+  type        String    @default("voice") 
+  status      String    @default("ongoing") 
+  duration    Int       @default(0)
+  startedAt   DateTime?
+  endedAt     DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  caller    User @relation("CallsMade", fields: [callerId], references: [id])
+  recipient User @relation("CallsReceived", fields: [recipientId], references: [id])
+}
+
+model Friendship {
+  id                String    @id @default(uuid())
+  userId            String
+  friendId          String
+  lastMessageId     String?
+  lastInteractionAt DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  user        User     @relation("UserFriendships", fields: [userId], references: [id])
+  friend      User     @relation("FriendUserFriendships", fields: [friendId], references: [id])
+  lastMessage Message? @relation("LastMessage", fields: [lastMessageId], references: [id])
+
+  @@unique([userId, friendId])
+}

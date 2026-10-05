@@ -69,18 +69,12 @@ app.use('/api', apiLimiter);
 
 // ========== HEALTH CHECK (for debugging "Failed to fetch") ==========
 app.get('/api/health', (req, res) => {
-  res.status(200).json({
-    success: true,
-    status: 'ok',
-    service: 'BASO Server',
-    time: new Date().toISOString(),
-    env: process.env.NODE_ENV || 'development',
-  });
+  res.status(200).json({ status: 'ok' });
 });
 
 // Legacy health path
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok', service: 'BASO Server', time: new Date() });
+  res.status(200).json({ status: 'ok' });
 });
 
 // ========== API Routes ==========

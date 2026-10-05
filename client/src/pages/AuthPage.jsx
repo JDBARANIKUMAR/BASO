@@ -252,8 +252,10 @@ export const AuthPage = () => {
       console.error('[AuthPage] Send OTP error:', err);
       setError(
         err.isNetworkError
-          ? 'Cannot connect to server. Please check your connection and try again.'
-          : err.message || 'Failed to send verification code. Please try again.'
+          ? 'Server unreachable. Please check if the backend is running.'
+          : err.status === 400
+          ? 'Invalid number. Please check the mobile number and try again.'
+          : err.message || 'OTP failed. Please try again.'
       );
     } finally {
       setLoading(false);
@@ -288,8 +290,10 @@ export const AuthPage = () => {
       console.error('[AuthPage] Verify OTP error:', err);
       setError(
         err.isNetworkError
-          ? 'Cannot connect to server. Please try again.'
-          : err.message || 'Invalid or expired verification code.'
+          ? 'Server unreachable. Please check if the backend is running.'
+          : err.status === 400
+          ? 'OTP failed. Invalid or expired verification code.'
+          : err.message || 'OTP failed. Please try again.'
       );
     } finally {
       setLoading(false);
