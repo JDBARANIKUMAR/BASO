@@ -2,10 +2,20 @@ import { io } from 'socket.io-client';
 import { api } from './api';
 
 // Backend origin for sockets. VITE_SOCKET_URL wins; otherwise derive it from
-// VITE_API_URL (strip the trailing /api) so only ONE env var is needed.
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
-const SOCKET_URL =
-  import.meta.env.VITE_SOCKET_URL || API_URL.replace(/\/api\/?$/, '');
+// VITE_API_URL (strip the trailing /api). Defaults to production Render server.
+const getSocketUrl = () => {
+  const socketEnv = (import.meta.env.VITE_SOCKET_URL || '').trim();
+  if (socketEnv && !socketEnv.includes('your-service') && !socketEnv.includes('your-backend')) {
+    return socketEnv.replace(/\/+$/, '');
+  }
+  const apiEnv = (import.meta.env.VITE_API_URL || '').trim();
+  if (apiEnv && !apiEnv.includes('your-service') && !apiEnv.includes('your-backend')) {
+    return apiEnv.replace(/\/api\/?$/, '');
+  }
+  return 'https://baso-chatbox.onrender.com';
+};
+
+const SOCKET_URL = getSocketUrl();
 
 class SocketService {
   constructor() {

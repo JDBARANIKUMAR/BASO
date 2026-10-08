@@ -1,7 +1,14 @@
 // ─── Central API file: the ONLY place that knows the backend URL ────────────
 // VITE_API_URL is read at build time (set it in Vercel → Settings → Env Vars).
-// Local dev fallback: http://localhost:5000/api
-const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/+$/, '');
+const getApiBaseUrl = () => {
+  const envUrl = (import.meta.env.VITE_API_URL || '').trim();
+  if (envUrl && !envUrl.includes('your-service') && !envUrl.includes('your-backend')) {
+    return envUrl.replace(/\/+$/, '');
+  }
+  return 'https://baso-chatbox.onrender.com/api';
+};
+
+const API_BASE_URL = getApiBaseUrl();
 
 // Free-tier hosts (Render/Railway) sleep after inactivity. Waking can take
 // 30-60s, so requests get a long timeout instead of the old 10s.
