@@ -212,27 +212,38 @@ export const friendlyErrorMessage = (err, context = 'request') => {
   if (!err) return 'Something went wrong. Please try again.';
 
   if (err.kind === 'network' || err.kind === 'timeout') {
-    return 'Server not reachable. If the app was idle, the server may be waking up - please wait a moment and try again.';
+    return 'Cannot reach the server. Please check your internet connection or wait a moment while the server connects.';
   }
-  if (err.kind === 'http') {
-    if (err.status === 400 && context === 'otp-send') {
-      return `Invalid mobile number. ${err.message || ''}`.trim();
+
+  const serverMsg = err.data?.message || err.message || '';
+
+  if (err.kind === 'http' || err.status) {
+    // Rate limit / cooldown
+    if (err.status === 429) {
+      return serverMsg || 'Too many requests. Please wait before trying again.';
     }
+
+    // Specific OTP send errors
     if (context === 'otp-send') {
-      return err.status >= 500
-        ? `Server error while sending the code. ${err.message || 'Please try again later.'}`
-        : err.message || 'Could not send the OTP. Please try again.';
-    }
-    if (context === 'otp-verify') {
-      if (err.status >= 500) {
-        return `Server error while verifying the code. ${err.message || 'Please try again later.'}`;
+      if (err.status === 400) {
+        return serverMsg || 'Invalid mobile number. Please check country code and digits.';
       }
-      return err.message || 'OTP failed. Invalid or expired verification code.';
+      if (err.status === 502 || serverMsg.toLowerCase().includes('sms')) {
+        return 'SMS delivery failed. Please check your mobile number or try again later.';
+      }
+      return serverMsg || 'Could not send verification code. Please try again.';
     }
-    if (err.status >= 500) {
-      return `Server error. ${err.message || 'Please try again later.'}`;
+
+    // Specific OTP verify errors
+    if (context === 'otp-verify') {
+      if (err.status === 400 || err.status === 401) {
+        return serverMsg || 'Incorrect or expired verification code. Please try again.';
+      }
+      return serverMsg || 'Verification failed. Please try again.';
     }
-    return err.message || 'Something went wrong. Please try again.';
+
+    return serverMsg || 'Something went wrong. Please try again.';
   }
-  return err.message || 'Something went wrong. Please try again.';
+
+  return serverMsg || 'Something went wrong. Please try again.';
 };

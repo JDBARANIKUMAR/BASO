@@ -13,7 +13,7 @@ const testFlow = async () => {
     const otpRes = await fetch(`${BASE_URL}/api/auth/send-otp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mobile: '+919876543210' }),
+      body: JSON.stringify({ countryCode: '+91', mobile: '9876543210' }),
     }).then((r) => r.json());
     console.log('Send OTP Response:', otpRes);
 
@@ -22,7 +22,7 @@ const testFlow = async () => {
     const verifyRes = await fetch(`${BASE_URL}/api/auth/verify-otp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mobile: '+919876543210', code }),
+      body: JSON.stringify({ countryCode: '+91', mobile: '9876543210', otp: code }),
     }).then((r) => r.json());
     console.log('Verify Response:', {
       success: verifyRes.success,

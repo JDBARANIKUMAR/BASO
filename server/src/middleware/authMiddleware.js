@@ -1,5 +1,5 @@
 import { verifyAccessToken } from '../utils/tokenService.js';
-import { prisma } from '../config/db.js';
+import { query } from '../config/db.js';
 
 export const requireAuth = async (req, res, next) => {
   try {
@@ -24,7 +24,9 @@ export const requireAuth = async (req, res, next) => {
       });
     }
 
-    const user = await prisma.user.findUnique({ where: { id: decoded.id } });
+    const result = await query('SELECT * FROM users WHERE id = $1;', [decoded.id]);
+    const user = result.rows[0];
+
     if (!user) {
       return res.status(401).json({
         success: false,

@@ -252,7 +252,11 @@ export const AuthPage = () => {
 
     setLoading(true);
     try {
-      const res = await api.post('/auth/send-otp', { mobile: fullE164 });
+      const dialCode = '+' + getCountryCallingCode(countryCode);
+      const res = await api.post('/auth/send-otp', {
+        countryCode: dialCode,
+        mobile: nationalNumber.trim(),
+      });
       setStep('otp');
       setResendTimer(res.resendAvailableInSeconds || 30);
       if (res.devCode) {
@@ -279,9 +283,11 @@ export const AuthPage = () => {
 
     setLoading(true);
     try {
+      const dialCode = '+' + getCountryCallingCode(countryCode);
       const res = await api.post('/auth/verify-otp', {
-        mobile: fullE164,
-        code: otp.trim(),
+        countryCode: dialCode,
+        mobile: nationalNumber.trim(),
+        otp: otp.trim(),
       });
 
       login(res.accessToken, res.user);

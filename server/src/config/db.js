@@ -1,41 +1,72 @@
+import pg from 'pg';
+import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 
-export const prisma = new PrismaClient({
-  log: ['warn', 'error'],
+dotenv.config();
+
+const { Pool } = pg;
+
+// ─── Neon Serverless Postgres Connection Pool ───────────────────────────────
+// Neon requires SSL. We enforce sslmode=require and set rejectUnauthorized: false
+// to ensure compatibility with serverless pooling certificates.
+const isLocalhost = Boolean(
+  process.env.DATABASE_URL &&
+    (process.env.DATABASE_URL.includes('localhost') || process.env.DATABASE_URL.includes('127.0.0.1'))
+);
+
+export const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: isLocalhost ? false : { rejectUnauthorized: false },
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
 });
 
+pool.on('error', (err) => {
+  console.error('[pg Pool Error] Unexpected idle client error:', err.message);
+});
+
+/**
+ * Execute a parameterized query with pg Pool
+ * @param {string} text - SQL statement with $1, $2 placeholders
+ * @param {Array} params - Array of parameter values
+ */
+export const query = (text, params) => pool.query(text, params);
+
+/**
+ * Verify database connection at server startup
+ */
 export const connectDB = async () => {
-  if (!process.env.DATABASE_URL) {
-    console.error('[Database] DATABASE_URL is not set.');
-    console.error('[Database] Fix: add DATABASE_URL to your .env (local) or environment variables (Render/Railway).');
-    console.error('[Database] Example: postgresql://user:password@host/db?sslmode=require');
-    process.exit(1);
+  if (!process.env.DATABASE_URL || process.env.DATABASE_URL.includes('ep-cool-snowflake-123456')) {
+    console.warn('[Database] DATABASE_URL is not configured or using placeholder in .env.');
+    console.warn('[Database] Please provide a valid Neon PostgreSQL connection string.');
+    return;
   }
 
   try {
-    await prisma.$connect();
-    console.log('[Database] PostgreSQL (Neon) connected via Prisma');
+    const client = await pool.connect();
+    const result = await client.query('SELECT NOW() AS current_time');
+    client.release();
+    console.log('[Database] Neon PostgreSQL connected via pg Pool at', result.rows[0].current_time);
   } catch (error) {
-    console.error('[Database] CONNECTION FAILED:', error.message);
-    console.error('[Database] Troubleshooting checklist:');
-    console.error('  1. DATABASE_URL is correct and points to your production database.');
-    console.error('  2. Neon: branch is NOT paused (Neon auto-pauses idle branches - resume it in the console).');
-    console.error('  3. Neon: connection string ends with ?sslmode=require.');
-    console.error('  4. IP allowlist: add 0.0.0.0/0 (Neon/other providers) - hosting IPs change often.');
-    console.error('  5. Schema exists: run `npx prisma db push` once from your machine.');
-    process.exit(1);
+    console.error('[Database] Connection failed:', error.message);
+    console.error('Troubleshooting: Ensure DATABASE_URL in .env has sslmode=require and Neon branch is active.');
   }
 };
 
 /**
- * Lightweight readiness probe used by GET /api/health.
- * Returns true when the database answers, false otherwise (never throws).
+ * Health check probe used by GET /api/health
  */
 export const isDbReady = async () => {
   try {
-    await prisma.$queryRaw`SELECT 1`;
-    return true;
+    const res = await pool.query('SELECT 1');
+    return Boolean(res && res.rowCount > 0);
   } catch {
     return false;
   }
 };
+
+// Keep prisma client available for existing legacy tables/relations
+export const prisma = new PrismaClient({
+  log: ['warn', 'error'],
+});

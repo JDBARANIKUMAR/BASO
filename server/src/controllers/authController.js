@@ -1,5 +1,5 @@
-import { prisma } from '../config/db.js';
-import { sendOtpCode, verifyOtpCode, sanitizeAndValidateMobile } from '../utils/otpService.js';
+import { query } from '../config/db.js';
+import { sendOtpCode, verifyOtpCode } from '../utils/otpService.js';
 import {
   generateTokens,
   verifyRefreshToken,
@@ -10,20 +10,21 @@ import {
 // POST /api/auth/send-otp
 export const sendOtp = async (req, res, next) => {
   try {
-    const { mobile } = req.body;
-    if (!mobile || typeof mobile !== 'string' || mobile.trim().length < 4) {
+    const { countryCode, mobile } = req.body;
+
+    if (!mobile || typeof mobile !== 'string' || mobile.trim().length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide a valid mobile number with country code.',
+        message: 'Mobile number is required.',
       });
     }
 
-    const result = await sendOtpCode(mobile);
-    res.status(200).json({
-      success: true,
-      message: 'Verification code sent successfully.',
-      ...result,
+    const result = await sendOtpCode({
+      countryCode: countryCode || '+91',
+      mobile: mobile.trim(),
     });
+
+    return res.status(200).json(result);
   } catch (error) {
     next(error);
   }
@@ -32,61 +33,54 @@ export const sendOtp = async (req, res, next) => {
 // POST /api/auth/verify-otp
 export const verifyOtp = async (req, res, next) => {
   try {
-    const { mobile, code } = req.body;
-    if (!mobile || !code) {
+    const { countryCode, mobile, otp, code } = req.body;
+    const otpValue = otp || code;
+
+    if (!mobile || typeof mobile !== 'string' || mobile.trim().length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'Mobile number and verification code are required.',
+        message: 'Mobile number is required.',
       });
     }
 
-    const sanitized = sanitizeAndValidateMobile(mobile);
-    await verifyOtpCode(sanitized, code);
-
-    // Check if user exists
-    let user = await prisma.user.findUnique({ where: { mobile: sanitized } });
-    let isNewUser = false;
-
-    if (!user) {
-      user = await prisma.user.create({
-        data: {
-          mobile: sanitized,
-          name: '',
-          isRegistered: false,
-          isOnline: true,
-        },
+    if (!otpValue || typeof otpValue !== 'string' || otpValue.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Verification code is required.',
       });
-      isNewUser = true;
-    } else if (!user.isRegistered) {
-      isNewUser = true;
     }
 
+    const { user, isNewUser, countryCode: verifiedCode, mobile: verifiedMobile, e164 } = await verifyOtpCode({
+      countryCode: countryCode || '+91',
+      mobile: mobile.trim(),
+      otp: otpValue.trim(),
+    });
+
+    // Generate long-lived JWT token (30 days) and refresh token
     const { accessToken, refreshToken } = generateTokens(user.id);
 
-    // Save refresh token to user
-    user = await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        refreshToken,
-        lastSeen: new Date(),
-        isOnline: true,
-      },
-    });
+    // Save refresh token & online status in database
+    await query(
+      'UPDATE users SET refresh_token = $1, is_online = true, last_seen = NOW() WHERE id = $2;',
+      [refreshToken, user.id]
+    );
 
     setRefreshTokenCookie(res, refreshToken);
 
     const publicUser = {
       id: user.id,
-      mobile: user.mobile,
-      name: user.name,
-      avatar: user.avatar,
-      isRegistered: user.isRegistered,
-      isOnline: user.isOnline,
-      lastSeen: user.lastSeen,
-      createdAt: user.createdAt,
+      countryCode: user.country_code || verifiedCode,
+      mobile: user.mobile || verifiedMobile,
+      e164,
+      name: user.name || '',
+      avatar: user.avatar || '',
+      isRegistered: Boolean(user.is_registered ?? user.isRegistered),
+      isOnline: true,
+      lastSeen: user.last_seen || user.lastSeen,
+      createdAt: user.created_at || user.createdAt,
     };
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: 'OTP verified successfully.',
       accessToken,
@@ -109,27 +103,29 @@ export const completeProfile = async (req, res, next) => {
       });
     }
 
-    const updatedUser = await prisma.user.update({
-      where: { id: req.user.id },
-      data: {
-        name: name.trim(),
-        avatar: avatar || null,
-        isRegistered: true,
-      },
-    });
+    const updateResult = await query(
+      `UPDATE users
+       SET name = $1, avatar = $2, is_registered = true, updated_at = NOW()
+       WHERE id = $3
+       RETURNING *;`,
+      [name.trim(), avatar || null, req.user.id]
+    );
+
+    const updatedUser = updateResult.rows[0];
 
     const publicUser = {
       id: updatedUser.id,
+      countryCode: updatedUser.country_code || '+91',
       mobile: updatedUser.mobile,
       name: updatedUser.name,
-      avatar: updatedUser.avatar,
-      isRegistered: updatedUser.isRegistered,
-      isOnline: updatedUser.isOnline,
-      lastSeen: updatedUser.lastSeen,
-      createdAt: updatedUser.createdAt,
+      avatar: updatedUser.avatar || '',
+      isRegistered: true,
+      isOnline: Boolean(updatedUser.is_online ?? updatedUser.isOnline),
+      lastSeen: updatedUser.last_seen || updatedUser.lastSeen,
+      createdAt: updatedUser.created_at || updatedUser.createdAt,
     };
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: 'Profile completed.',
       user: publicUser,
@@ -161,8 +157,10 @@ export const refreshToken = async (req, res, next) => {
       });
     }
 
-    const user = await prisma.user.findUnique({ where: { id: decoded.id } });
-    if (!user || user.refreshToken !== cookieToken) {
+    const userResult = await query('SELECT * FROM users WHERE id = $1;', [decoded.id]);
+    const user = userResult.rows[0];
+
+    if (!user || user.refresh_token !== cookieToken) {
       clearRefreshTokenCookie(res);
       return res.status(401).json({
         success: false,
@@ -170,28 +168,26 @@ export const refreshToken = async (req, res, next) => {
       });
     }
 
-    // Token rotation: generate new access & refresh tokens
+    // Token rotation
     const { accessToken, refreshToken: newRefreshToken } = generateTokens(user.id);
-    
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { refreshToken: newRefreshToken },
-    });
+
+    await query('UPDATE users SET refresh_token = $1 WHERE id = $2;', [newRefreshToken, user.id]);
 
     setRefreshTokenCookie(res, newRefreshToken);
 
     const publicUser = {
       id: user.id,
+      countryCode: user.country_code || '+91',
       mobile: user.mobile,
-      name: user.name,
-      avatar: user.avatar,
-      isRegistered: user.isRegistered,
-      isOnline: user.isOnline,
-      lastSeen: user.lastSeen,
-      createdAt: user.createdAt,
+      name: user.name || '',
+      avatar: user.avatar || '',
+      isRegistered: Boolean(user.is_registered ?? user.isRegistered),
+      isOnline: Boolean(user.is_online ?? user.isOnline),
+      lastSeen: user.last_seen || user.lastSeen,
+      createdAt: user.created_at || user.createdAt,
     };
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       accessToken,
       user: publicUser,
@@ -203,17 +199,20 @@ export const refreshToken = async (req, res, next) => {
 
 // GET /api/auth/me
 export const getMe = async (req, res) => {
+  const user = req.user;
   const publicUser = {
-    id: req.user.id,
-    mobile: req.user.mobile,
-    name: req.user.name,
-    avatar: req.user.avatar,
-    isRegistered: req.user.isRegistered,
-    isOnline: req.user.isOnline,
-    lastSeen: req.user.lastSeen,
-    createdAt: req.user.createdAt,
+    id: user.id,
+    countryCode: user.country_code || '+91',
+    mobile: user.mobile,
+    name: user.name || '',
+    avatar: user.avatar || '',
+    isRegistered: Boolean(user.is_registered ?? user.isRegistered),
+    isOnline: Boolean(user.is_online ?? user.isOnline),
+    lastSeen: user.last_seen || user.lastSeen,
+    createdAt: user.created_at || user.createdAt,
   };
-  res.status(200).json({
+
+  return res.status(200).json({
     success: true,
     user: publicUser,
   });
@@ -222,25 +221,21 @@ export const getMe = async (req, res) => {
 // POST /api/auth/logout
 export const logout = async (req, res, next) => {
   try {
-    const cookieToken = req.cookies.refreshToken;
+    const cookieToken = req.cookies?.refreshToken;
     if (cookieToken) {
       try {
         const decoded = verifyRefreshToken(cookieToken);
-        await prisma.user.update({
-          where: { id: decoded.id },
-          data: {
-            refreshToken: null,
-            isOnline: false,
-            lastSeen: new Date(),
-          },
-        });
+        await query(
+          'UPDATE users SET refresh_token = NULL, is_online = false, last_seen = NOW() WHERE id = $1;',
+          [decoded.id]
+        );
       } catch (e) {
-        // Ignore token error on logout
+        // Ignore token decode error on logout
       }
     }
 
     clearRefreshTokenCookie(res);
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: 'Logged out successfully.',
     });

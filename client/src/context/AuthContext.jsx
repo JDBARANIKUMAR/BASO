@@ -13,6 +13,20 @@ export const AuthProvider = ({ children }) => {
 
     const checkAuth = async () => {
       try {
+        const storedToken = api.getAccessToken();
+        if (storedToken) {
+          try {
+            const res = await api.get('/auth/me');
+            if (res.success && res.user && isMounted) {
+              setUser(res.user);
+              setLoading(false);
+              return;
+            }
+          } catch (e) {
+            console.log('[Auth] Stored token check failed, trying refresh:', e.message);
+          }
+        }
+
         // Attempt silent refresh using httpOnly refreshToken cookie
         const refreshed = await api.silentRefresh();
         if (refreshed && isMounted) {

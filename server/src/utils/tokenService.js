@@ -4,8 +4,9 @@ const ACCESS_TOKEN_SECRET = process.env.ACCESS_TOKEN_SECRET || 'baso_jwt_access_
 const REFRESH_TOKEN_SECRET = process.env.REFRESH_TOKEN_SECRET || 'baso_jwt_refresh_secret_super_secure_key_2026';
 
 export const generateTokens = (userId) => {
+  // Long-lived access token (30 days) to keep user persistently logged in across reloads
   const accessToken = jwt.sign({ id: userId }, ACCESS_TOKEN_SECRET, {
-    expiresIn: '15m',
+    expiresIn: '30d',
   });
 
   const refreshToken = jwt.sign({ id: userId }, REFRESH_TOKEN_SECRET, {
