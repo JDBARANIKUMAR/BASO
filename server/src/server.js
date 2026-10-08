@@ -6,7 +6,7 @@ import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 
-import { connectDB } from './config/db.js';
+import { connectDB, isDbReady } from './config/db.js';
 import { apiLimiter } from './middleware/rateLimiter.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { initSocket } from './sockets/socketHandler.js';
@@ -22,14 +22,18 @@ const app = express();
 const server = http.createServer(app);
 
 const PORT = process.env.PORT || 5000;
-const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
 
-// Build allowed origins list from CLIENT_URL + always allow localhost for dev
+// Build allowed origins list from CLIENT_URL + always allow localhost for dev.
+// CLIENT_URL may contain multiple origins separated by commas (e.g. preview + prod).
 const allowedOrigins = [
-  CLIENT_URL,
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-].filter(Boolean);
+  ...new Set([
+    ...(process.env.CLIENT_URL || '').split(',').map((o) => o.trim()).filter(Boolean),
+    'https://client-teal-seven-12.vercel.app',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:4173',
+  ]),
+];
 
 // Trust proxy for rate limiting behind reverse proxies (Render, Railway, etc.)
 app.set('trust proxy', 1);
@@ -43,7 +47,9 @@ app.use(
       if (allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
-      return callback(new Error(`CORS: Origin ${origin} is not allowed`));
+      const err = new Error(`CORS blocked: origin ${origin} is not allowed. Add it to CLIENT_URL on the server.`);
+      err.status = 403; // so the error handler returns 403, not 500
+      return callback(err);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -59,6 +65,17 @@ app.use(
   })
 );
 
+// ========== REQUEST LOGGING (method, path, status, duration) ==========
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const ms = Date.now() - start;
+    if (req.path === '/api/health' && res.statusCode < 400) return; // keep pinger logs quiet
+    console.log(`[HTTP] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${ms}ms)`);
+  });
+  next();
+});
+
 // Body parsing with limits (MUST be enabled for POST JSON bodies)
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
@@ -67,14 +84,16 @@ app.use(cookieParser());
 // Global API rate limit
 app.use('/api', apiLimiter);
 
-// ========== HEALTH CHECK (for debugging "Failed to fetch") ==========
-app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
+// ========== HEALTH CHECK (for uptime pingers & debugging "Failed to fetch") ==========
+app.get('/api/health', async (req, res) => {
+  const dbUp = await isDbReady();
+  res.status(200).json({ status: 'ok', db: dbUp ? 'up' : 'down', uptime: Math.round(process.uptime()) });
 });
 
 // Legacy health path
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
+app.get('/health', async (req, res) => {
+  const dbUp = await isDbReady();
+  res.status(200).json({ status: 'ok', db: dbUp ? 'up' : 'down' });
 });
 
 // ========== API Routes ==========
@@ -99,10 +118,20 @@ initSocket(io);
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-// Connect DB and Start Server
+// ========== GLOBAL PROCESS HANDLERS (never crash silently) ==========
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] Unhandled promise rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught exception:', err);
+});
+
+// Connect DB and Start Server.
+// We listen on 0.0.0.0 so the hosting platform's proxy (Render/Railway) can reach us.
 connectDB().then(() => {
-  server.listen(PORT, () => {
-    console.log(`[BASO Server] Listening on http://localhost:${PORT}`);
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`[BASO Server] Listening on 0.0.0.0:${PORT}`);
+    console.log(`[BASO Server] Health check: /api/health`);
     console.log(`[BASO Server] Allowed origins: ${allowedOrigins.join(', ')}`);
   });
 });

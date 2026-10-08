@@ -1,7 +1,11 @@
 import { io } from 'socket.io-client';
 import { api } from './api';
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
+// Backend origin for sockets. VITE_SOCKET_URL wins; otherwise derive it from
+// VITE_API_URL (strip the trailing /api) so only ONE env var is needed.
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const SOCKET_URL =
+  import.meta.env.VITE_SOCKET_URL || API_URL.replace(/\/api\/?$/, '');
 
 class SocketService {
   constructor() {
@@ -23,10 +27,15 @@ class SocketService {
     this.socket = io(SOCKET_URL, {
       auth: { token },
       withCredentials: true,
-      transports: ['websocket', 'polling'],
+      // polling first: survives proxies/CDNs on Render/Vercel; upgrades to
+      // websocket automatically when available.
+      transports: ['polling', 'websocket'],
       reconnection: true,
-      reconnectionAttempts: 10,
+      reconnectionAttempts: Infinity, // keep retrying forever (sleeping server)
       reconnectionDelay: 1000,
+      reconnectionDelayMax: 15000,
+      randomizationFactor: 0.5,
+      timeout: 20000,
     });
 
     this.socket.on('connect', () => {

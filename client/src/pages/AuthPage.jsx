@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, RotateCw, AlertCircle, ChevronDown, Search, X } from 'lucide-react';
 import { parsePhoneNumber, isValidPhoneNumber, getCountries, getCountryCallingCode } from 'libphonenumber-js';
-import { api } from '../services/api';
+import { api, friendlyErrorMessage } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import Logo from '../components/Logo';
 
@@ -195,6 +195,17 @@ export const AuthPage = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [resendTimer, setResendTimer] = useState(0);
+  // Free-tier servers sleep: show a wake-up hint when a request takes long
+  const [waking, setWaking] = useState(false);
+
+  useEffect(() => {
+    if (!loading) {
+      setWaking(false);
+      return undefined;
+    }
+    const t = setTimeout(() => setWaking(true), 4000);
+    return () => clearTimeout(t);
+  }, [loading]);
 
   // The full E.164 number we'll send to the backend
   const fullE164 = useMemo(() => {
@@ -250,13 +261,7 @@ export const AuthPage = () => {
       }
     } catch (err) {
       console.error('[AuthPage] Send OTP error:', err);
-      setError(
-        err.isNetworkError
-          ? 'Server unreachable. Please check if the backend is running.'
-          : err.status === 400
-          ? 'Invalid number. Please check the mobile number and try again.'
-          : err.message || 'OTP failed. Please try again.'
-      );
+      setError(friendlyErrorMessage(err, 'otp-send'));
     } finally {
       setLoading(false);
     }
@@ -288,13 +293,7 @@ export const AuthPage = () => {
       }
     } catch (err) {
       console.error('[AuthPage] Verify OTP error:', err);
-      setError(
-        err.isNetworkError
-          ? 'Server unreachable. Please check if the backend is running.'
-          : err.status === 400
-          ? 'OTP failed. Invalid or expired verification code.'
-          : err.message || 'OTP failed. Please try again.'
-      );
+      setError(friendlyErrorMessage(err, 'otp-verify'));
     } finally {
       setLoading(false);
     }
@@ -384,6 +383,12 @@ export const AuthPage = () => {
                   </>
                 )}
               </button>
+
+              {loading && waking && (
+                <p className="text-xs text-zinc-500 text-center">
+                  Waking up the server, please wait…
+                </p>
+              )}
             </form>
           </div>
         ) : (
@@ -450,6 +455,12 @@ export const AuthPage = () => {
                   </>
                 )}
               </button>
+
+              {loading && waking && (
+                <p className="text-xs text-zinc-500 text-center">
+                  Waking up the server, please wait…
+                </p>
+              )}
 
               <div className="pt-2 text-center">
                 {resendTimer > 0 ? (

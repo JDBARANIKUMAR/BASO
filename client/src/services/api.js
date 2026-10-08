@@ -1,4 +1,17 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+// ─── Central API file: the ONLY place that knows the backend URL ────────────
+// VITE_API_URL is read at build time (set it in Vercel → Settings → Env Vars).
+// Local dev fallback: http://localhost:5000/api
+const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/+$/, '');
+
+// Free-tier hosts (Render/Railway) sleep after inactivity. Waking can take
+// 30-60s, so requests get a long timeout instead of the old 10s.
+export const REQUEST_TIMEOUT_MS =
+  Number(import.meta.env.VITE_REQUEST_TIMEOUT_MS) || 45000;
+
+// Endpoints that get ONE automatic retry after a network failure (cold start).
+const RETRYABLE_ENDPOINTS = ['/auth/send-otp', '/auth/verify-otp', '/auth/refresh'];
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 class ApiService {
   constructor() {
@@ -19,89 +32,101 @@ class ApiService {
     return this.accessToken;
   }
 
+  // Convert a raw fetch failure into a typed, user-friendly error.
+  // err.kind: 'timeout' | 'network' | 'http'   err.status: HTTP status or 0
+  toFriendlyError(rawErr, { timedOut } = {}) {
+    if (rawErr.kind) return rawErr; // already converted
+
+    const err = new Error(
+      timedOut
+        ? 'The server is taking too long to respond. It may be waking up from sleep - please try again.'
+        : 'Cannot reach the server. It may be asleep or unreachable - please try again.'
+    );
+    err.kind = timedOut ? 'timeout' : 'network';
+    err.status = 0;
+    err.isNetworkError = true; // kept for backward compatibility
+    err.cause = rawErr;
+    return err;
+  }
+
+  async fetchWithTimeout(url, config) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      return await fetch(url, { ...config, signal: controller.signal });
+    } catch (rawErr) {
+      // AbortError here means OUR timeout fired, not the user cancelling.
+      throw this.toFriendlyError(rawErr, { timedOut: rawErr.name === 'AbortError' });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
   async request(endpoint, options = {}) {
     const url = `${API_BASE_URL}${endpoint}`;
-    const headers = {
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    };
+    const allowRetry = options.retry ?? RETRYABLE_ENDPOINTS.includes(endpoint);
 
-    if (this.accessToken) {
-      headers['Authorization'] = `Bearer ${this.accessToken}`;
-    }
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
-
-    const config = {
-      ...options,
-      headers,
-      credentials: 'include', // CRITICAL: sends httpOnly refresh-token cookie
-      signal: controller.signal,
-    };
-
-    try {
-      let res;
-      try {
-        res = await fetch(url, config);
-        clearTimeout(timeoutId);
-      } catch (networkError) {
-        clearTimeout(timeoutId);
-        // This is the "Failed to fetch" scenario — network/CORS/server-down
-        console.error(`[API] Network error for ${endpoint}:`, networkError);
-        
-        let message = 'Cannot connect to server. Please check your internet connection and try again.';
-        if (networkError.name === 'AbortError') {
-          message = 'Request timed out. Server might be down or unreachable.';
-        }
-
-        const err = new Error(message);
-        err.status = 0;
-        err.isNetworkError = true;
-        throw err;
+    const buildConfig = () => {
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(options.headers || {}),
+      };
+      if (this.accessToken) {
+        headers['Authorization'] = `Bearer ${this.accessToken}`;
       }
+      return {
+        ...options,
+        headers,
+        credentials: 'include', // CRITICAL: sends httpOnly refresh-token cookie
+      };
+    };
 
-      // Handle 401 Token Expired -> Attempt Silent Refresh
-      if (
-        res.status === 401 &&
-        !endpoint.includes('/auth/refresh') &&
-        !endpoint.includes('/auth/logout')
-      ) {
-        const refreshSuccess = await this.silentRefresh();
-        if (refreshSuccess) {
-          headers['Authorization'] = `Bearer ${this.accessToken}`;
-          try {
-            res = await fetch(url, { ...config, headers, signal: undefined }); // omit signal on retry
-          } catch (networkError) {
-            console.error(`[API] Network error on retry for ${endpoint}:`, networkError);
-            const err = new Error('Cannot connect to server. Please try again.');
-            err.status = 0;
-            err.isNetworkError = true;
-            throw err;
+    let attempt = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      attempt += 1;
+      try {
+        let res = await this.fetchWithTimeout(url, buildConfig());
+
+        // Handle 401 Token Expired -> Attempt Silent Refresh (once)
+        if (
+          res.status === 401 &&
+          !endpoint.includes('/auth/refresh') &&
+          !endpoint.includes('/auth/logout')
+        ) {
+          const refreshSuccess = await this.silentRefresh();
+          if (refreshSuccess) {
+            res = await this.fetchWithTimeout(url, buildConfig());
           }
         }
-      }
 
-      const data = await res.json();
-      if (!res.ok) {
-        const error = new Error(data.message || 'Something went wrong. Please try again.');
-        error.status = res.status;
-        error.data = data;
-        throw error;
-      }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const error = new Error(
+            data.message || 'Something went wrong. Please try again.'
+          );
+          error.kind = 'http';
+          error.status = res.status;
+          error.data = data;
+          throw error;
+        }
+        return data;
+      } catch (err) {
+        const friendly = err.kind ? err : this.toFriendlyError(err);
+        const isNetworkIssue = friendly.kind === 'network' || friendly.kind === 'timeout';
 
-      return data;
-    } catch (err) {
-      // Re-throw with a user-friendly message if it's a raw TypeError
-      if (err instanceof TypeError && err.message === 'Failed to fetch') {
-        const friendlyErr = new Error(
-          'Cannot connect to server. Please check your connection and try again.'
-        );
-        friendlyErr.status = 0;
-        friendlyErr.isNetworkError = true;
-        throw friendlyErr;
+        // One automatic retry for login/refresh on network failure (cold start)
+        if (isNetworkIssue && allowRetry && attempt === 1) {
+          console.warn(`[API] ${endpoint} unreachable (attempt 1) - retrying once...`);
+          await sleep(2000);
+          continue;
+        }
+
+        if (isNetworkIssue) {
+          console.error(`[API] Network error for ${endpoint}:`, friendly.message);
+        }
+        throw friendly;
       }
-      throw err;
     }
   }
 
@@ -111,32 +136,38 @@ class ApiService {
     }
 
     this.refreshPromise = (async () => {
-      try {
-        const res = await fetch(`${API_BASE_URL}/auth/refresh`, {
+      const tryOnce = async () => {
+        const res = await this.fetchWithTimeout(`${API_BASE_URL}/auth/refresh`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include', // Send httpOnly cookie
         });
-
-        if (!res.ok) {
-          this.setAccessToken(null);
-          return false;
-        }
-
-        const data = await res.json();
+        if (!res.ok) return false;
+        const data = await res.json().catch(() => ({}));
         if (data.accessToken) {
           this.setAccessToken(data.accessToken);
           return true;
         }
         return false;
+      };
+
+      let ok = false;
+      try {
+        ok = await tryOnce();
       } catch (err) {
-        console.warn('[API] Silent refresh failed:', err.message);
-        this.setAccessToken(null);
-        return false;
-      } finally {
-        this.refreshPromise = null;
+        console.warn('[API] Silent refresh failed (network):', err.message);
+        await sleep(2000);
+        try {
+          ok = await tryOnce(); // one automatic retry (server waking up)
+        } catch (err2) {
+          console.warn('[API] Silent refresh retry failed:', err2.message);
+        }
       }
-    })();
+      if (!ok) this.setAccessToken(null);
+      return ok;
+    })().finally(() => {
+      this.refreshPromise = null;
+    });
 
     return this.refreshPromise;
   }
@@ -146,10 +177,11 @@ class ApiService {
     return this.request(endpoint, { method: 'GET' });
   }
 
-  post(endpoint, body) {
+  post(endpoint, body, options = {}) {
     return this.request(endpoint, {
       method: 'POST',
       body: JSON.stringify(body),
+      ...options,
     });
   }
 
@@ -166,3 +198,34 @@ class ApiService {
 }
 
 export const api = new ApiService();
+
+// ─── Maps an error to one of four distinct, user-facing messages ────────────
+// kind: 'invalid-number' | 'otp' | generic context for server/network errors
+export const friendlyErrorMessage = (err, context = 'request') => {
+  if (!err) return 'Something went wrong. Please try again.';
+
+  if (err.kind === 'network' || err.kind === 'timeout') {
+    return 'Server not reachable. If the app was idle, the server may be waking up - please wait a moment and try again.';
+  }
+  if (err.kind === 'http') {
+    if (err.status === 400 && context === 'otp-send') {
+      return `Invalid mobile number. ${err.message || ''}`.trim();
+    }
+    if (context === 'otp-send') {
+      return err.status >= 500
+        ? `Server error while sending the code. ${err.message || 'Please try again later.'}`
+        : err.message || 'Could not send the OTP. Please try again.';
+    }
+    if (context === 'otp-verify') {
+      if (err.status >= 500) {
+        return `Server error while verifying the code. ${err.message || 'Please try again later.'}`;
+      }
+      return err.message || 'OTP failed. Invalid or expired verification code.';
+    }
+    if (err.status >= 500) {
+      return `Server error. ${err.message || 'Please try again later.'}`;
+    }
+    return err.message || 'Something went wrong. Please try again.';
+  }
+  return err.message || 'Something went wrong. Please try again.';
+};

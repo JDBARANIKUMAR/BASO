@@ -1,6 +1,6 @@
 # BASO — Premium Minimal Real-Time Chat & WebRTC Web App
 
-A minimalist, high-performance real-time chat and voice/video calling web application built on the **MERN** stack (MongoDB, Express, React, Node.js) with **Socket.io** and **WebRTC**.
+A minimalist, high-performance real-time chat and voice/video calling web application built on **React (Vite) + Express/Node.js + PostgreSQL (Neon) via Prisma**, with **Socket.io** and **WebRTC**.
 
 Designed strictly in **black and white with neutral greys** and zero colors or gradients, following an ultra-clean aesthetic with **Inter** typography, generous spacing, and 60fps micro-animations.
 
@@ -10,7 +10,7 @@ Designed strictly in **black and white with neutral greys** and zero colors or g
 1. [Key Features](#key-features)
 2. [Tech Stack](#tech-stack)
 3. [Monochrome Design System & Intro Splash](#monochrome-design-system--intro-splash)
-4. [Mongoose Schemas](#mongoose-schemas)
+4. [Database Schema (Prisma)](#database-schema-prisma)
 5. [API Routes](#api-routes)
 6. [Socket.io Events](#socketio-events)
 7. [WebRTC Architecture & Edge Cases](#webrtc-architecture--edge-cases)
@@ -52,7 +52,7 @@ Designed strictly in **black and white with neutral greys** and zero colors or g
 |---|---|
 | **Frontend** | React 18 (Vite), Tailwind CSS, Framer Motion, Lucide Icons |
 | **Backend** | Node.js, Express.js (REST API), Socket.io |
-| **Database** | MongoDB with Mongoose ODM |
+| **Database** | PostgreSQL (Neon) with Prisma ORM |
 | **Real-time** | Socket.io (chat, presence, call signaling) |
 | **Calling** | WebRTC (STUN + TURN peer-to-peer audio/video) |
 | **Authentication** | JWT (Access Tokens + httpOnly Cookie Refresh Tokens) |
@@ -72,73 +72,17 @@ Designed strictly in **black and white with neutral greys** and zero colors or g
 
 ---
 
-## ✦ Mongoose Schemas
+## ✦ Database Schema (Prisma)
 
-### 1. `User` (`server/src/models/User.js`)
-```javascript
-{
-  mobile: { type: String, required: true, unique: true, index: true },
-  name: { type: String, default: '', trim: true },
-  avatar: { type: String, default: '' },
-  isRegistered: { type: Boolean, default: false },
-  isOnline: { type: Boolean, default: false },
-  lastSeen: { type: Date, default: Date.now },
-  refreshToken: { type: String, default: null },
-  timestamps: true
-}
+The single source of truth is [`server/prisma/schema.prisma`](server/prisma/schema.prisma) (models: `User`, `Otp`, `Message`, `Call`, `Friendship`).
+
+```bash
+cd server
+npx prisma db push      # apply the schema to your database
+npx prisma studio       # optional: browse data visually
 ```
 
-### 2. `Friendship` (`server/src/models/Friendship.js`)
-```javascript
-{
-  user: { type: ObjectId, ref: 'User', required: true, index: true },
-  friend: { type: ObjectId, ref: 'User', required: true, index: true },
-  lastMessage: { type: ObjectId, ref: 'Message', default: null },
-  lastInteractionAt: { type: Date, default: Date.now, index: true },
-  timestamps: true
-}
-// Compound unique index: { user: 1, friend: 1 }
-```
-
-### 3. `Message` (`server/src/models/Message.js`)
-```javascript
-{
-  sender: { type: ObjectId, ref: 'User', required: true, index: true },
-  recipient: { type: ObjectId, ref: 'User', required: true, index: true },
-  content: { type: String, required: true, trim: true },
-  tempId: { type: String, default: null },
-  status: { type: String, enum: ['sent', 'delivered', 'read'], default: 'sent' },
-  deliveredAt: { type: Date, default: null },
-  readAt: { type: Date, default: null },
-  timestamps: true
-}
-```
-
-### 4. `Call` (`server/src/models/Call.js`)
-```javascript
-{
-  caller: { type: ObjectId, ref: 'User', required: true, index: true },
-  recipient: { type: ObjectId, ref: 'User', required: true, index: true },
-  type: { type: String, enum: ['voice', 'video'], required: true },
-  status: { type: String, enum: ['missed', 'declined', 'completed', 'busy', 'no_answer', 'ongoing'] },
-  duration: { type: Number, default: 0 },
-  startedAt: { type: Date, default: null },
-  endedAt: { type: Date, default: null },
-  timestamps: true
-}
-```
-
-### 5. `Otp` (`server/src/models/Otp.js`)
-```javascript
-{
-  mobile: { type: String, required: true, index: true },
-  code: { type: String, required: true },
-  expiresAt: { type: Date, required: true, index: { expires: 0 } }, // MongoDB TTL auto-cleanup
-  resendAvailableAt: { type: Date, required: true },
-  attempts: { type: Number, default: 0 },
-  timestamps: true
-}
-```
+> OTP rows are deleted as soon as they are verified or expired (app-level cleanup instead of MongoDB TTL indexes).
 
 ---
 
@@ -202,13 +146,14 @@ Designed strictly in **black and white with neutral greys** and zero colors or g
 
 ### 1. Prerequisites
 - Node.js (v18+)
-- MongoDB running locally (`mongodb://127.0.0.1:27017`) or a MongoDB Atlas URI.
+- A PostgreSQL database — [Neon](https://neon.tech) free tier, or a local PostgreSQL instance.
 
 ### 2. Backend Setup
 ```bash
 cd server
 npm install
-# Ensure .env exists (default values work out of the box with local MongoDB):
+cp .env.example .env    # then fill in DATABASE_URL + JWT secrets
+npx prisma db push      # create the tables
 npm run dev
 ```
 Server will start on `http://localhost:5000`.
@@ -228,31 +173,61 @@ Client will start on `http://localhost:5173`.
 
 ## ✦ Production Deployment Guide
 
-### Database: MongoDB Atlas
-1. Create a free cluster on [MongoDB Atlas](https://www.mongodb.com/atlas).
-2. Create a database user and whitelist all IPs (`0.0.0.0/0`).
-3. Copy the connection string:
-   `mongodb+srv://<user>:<password>@cluster0.mongodb.net/baso_chat?retryWrites=true&w=majority`
+**Order: Database → Backend → Frontend → update the final URLs.**
 
-### Backend: Render or Railway
+### 1. Database: Neon (PostgreSQL)
+1. Create a free project on [Neon](https://neon.tech).
+2. Copy the **pooled** connection string (it ends with `?sslmode=require`).
+3. Keep the branch **active** — Neon auto-pauses idle branches, which makes the API fail with connection errors.
+4. Push the schema once from your machine: `cd server && DATABASE_URL=<your-url> npx prisma db push`.
+
+### 2. Backend: Render or Railway
 1. Push your repository to GitHub.
-2. In [Render](https://render.com) or [Railway](https://railway.app), create a new **Web Service** pointing to the `server/` directory.
-3. Build Command: `npm install`
+2. Create a **Web Service** with root directory `server/` (see `server/render.yaml`).
+3. Build Command: `npm install && npx prisma generate && npx prisma db push`
 4. Start Command: `npm start`
-5. Configure Environment Variables:
-   - `PORT`: `5000` (or leave default assigned by platform)
+5. Health Check Path: `/api/health`
+6. Environment Variables:
    - `NODE_ENV`: `production`
-   - `CLIENT_URL`: `https://your-baso-frontend.vercel.app`
-   - `MONGODB_URI`: `<Your MongoDB Atlas URI>`
-   - `ACCESS_TOKEN_SECRET`: `<Generate strong 64-char random string>`
-   - `REFRESH_TOKEN_SECRET`: `<Generate strong 64-char random string>`
+   - `PORT`: assigned by the platform (do not hardcode)
+   - `CLIENT_URL`: `https://your-frontend.vercel.app` (comma-separate multiple origins)
+   - `DATABASE_URL`: `<your Neon pooled connection string>`
+   - `DIRECT_URL`: `<your Neon direct connection string>`
+   - `ACCESS_TOKEN_SECRET`: `<generate: openssl rand -hex 48>`
+   - `REFRESH_TOKEN_SECRET`: `<generate: openssl rand -hex 48>`
    - Optional Twilio SMS: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`
+7. Verify: open `https://your-backend.onrender.com/api/health` → `{"status":"ok",...}`.
 
-### Frontend: Vercel or Netlify
-1. In [Vercel](https://vercel.com), import your Git repository.
-2. Set Root Directory to `client`.
-3. Framework Preset: `Vite`.
-4. Environment Variables:
-   - `VITE_API_URL`: `https://your-baso-backend.onrender.com/api`
-   - `VITE_SOCKET_URL`: `https://your-baso-backend.onrender.com`
+### 3. Frontend: Vercel or Netlify
+1. Import your Git repository and set **Root Directory** to `client`.
+2. Framework Preset: `Vite`. Build Command: `npm run build`. Output Directory: `dist`.
+3. Environment Variables (read at **build** time — always `https`):
+   - `VITE_API_URL`: `https://your-backend.onrender.com/api`
+   - `VITE_SOCKET_URL`: `https://your-backend.onrender.com`
+   - Optional: `VITE_REQUEST_TIMEOUT_MS` (default `45000`)
+4. SPA routing (page refresh must not 404):
+   - Vercel: handled by `client/vercel.json` rewrites.
+   - Netlify: handled by `client/public/_redirects` (`/*  /index.html  200`).
 5. Click **Deploy**.
+
+### 4. Update the final URLs (after both are live)
+- Backend `CLIENT_URL` = your final frontend URL → redeploy backend.
+- Frontend `VITE_API_URL` / `VITE_SOCKET_URL` = your final backend URL → redeploy frontend.
+
+### 5. Free-tier sleep behaviour
+- Render/Railway free instances sleep after ~15 min idle; the first request then takes **30–60 s**.
+- The app already waits up to **45 s**, shows “Waking up the server, please wait…”, and **retries once** automatically on login.
+- Keep it awake with a free pinger hitting `GET /api/health` every 10 minutes: [UptimeRobot](https://uptimerobot.com), [cron-job.org](https://cron-job.org), or Better Stack.
+
+---
+
+## ✦ Final Deployment Test Checklist
+
+1. `https://your-backend.onrender.com/api/health` opens in the browser → `{"status":"ok","db":"up"}`.
+2. Open the deployed frontend → send OTP → code arrives (Twilio) or shows as Dev Code (no Twilio).
+3. Verify OTP → lands on onboarding/chat.
+4. Refresh the page → still logged in (silent refresh + cookie).
+5. Send a message → ticks go ✓ / ✓✓, second browser/session receives it in real time.
+6. Search a friend by full `+<country-code>` number and add them.
+7. Test on a real phone using the deployed link (HTTPS required for mic/camera).
+8. Hard-refresh a deep link (e.g. `/chat`) → no 404.
